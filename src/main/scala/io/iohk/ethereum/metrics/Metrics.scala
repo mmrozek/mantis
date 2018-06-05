@@ -40,4 +40,32 @@ object Metrics {
    * How many blocks forged by the leader.
    */
   final val RaftLeaderForgedBlocksNumber = "raft.leader.forged.blocks.number"
+
+  /**
+   * How many JSON-RPC endpoint calls have come our way.
+   */
+  final val JsonRpcEndpointTotalCallsNumber = "json.rpc.endpoint.total.calls.number"
+
+  /**
+   * How many JSON-RPC endpoint calls had a successful response.
+   */
+  final val JsonRpcEndpointTotalSuccessfulCallsNumber = "json.rpc.endpoint.total.successful.calls.number"
+
+  /**
+   * Ratio of `number of JSON-RPC endpoint calls that had a successful response` to `total number of JSON-RPC endpoint calls`.
+   */
+  final val JsonRpcEndpointSuccessfulCallsRatio = "json.rpc.endpoint.successful.calls.ratio"
+
+  /**
+   * Counts the rate at which the JSON RPC endpoint is called.
+   */
+  final val JsonRpcEndpointCounter = "json.rpc.endpoint.counter"
+
+  // These are not metrics per se but are used in order to dynamically create metric names.
+  object Fragment {
+    final val JsonRpcMethodCounterPrefix = "json.rpc.method."
+    final val JsonRpcMethodCounterSuffix = ".counter"
+    def mkJsonRpcMethodCounter(method: String): String = JsonRpcMethodCounterPrefix + method + JsonRpcMethodCounterSuffix
+  }
+
 }

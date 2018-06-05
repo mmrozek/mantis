@@ -1,5 +1,7 @@
 package io.iohk.ethereum.jsonrpc
 
+import java.util.concurrent.atomic.AtomicLong
+
 import io.iohk.ethereum.jsonrpc.EthService._
 import io.iohk.ethereum.jsonrpc.JsonRpcController.JsonRpcConfig
 import io.iohk.ethereum.jsonrpc.NetService._
@@ -8,15 +10,17 @@ import io.iohk.ethereum.jsonrpc.Web3Service._
 import io.iohk.ethereum.utils.Logger
 import org.json4s.JsonAST.{JArray, JValue}
 import org.json4s.JsonDSL._
-import com.typesafe.config.{Config => TypesafeConfig}
+import com.typesafe.config.{Config ⇒ TypesafeConfig}
 import io.iohk.ethereum.jsonrpc.TestService._
 import io.iohk.ethereum.jsonrpc.server.http.JsonRpcHttpServer.JsonRpcHttpServerConfig
 import io.iohk.ethereum.jsonrpc.server.ipc.JsonRpcIpcServer.JsonRpcIpcServerConfig
+import io.iohk.ethereum.metrics.{Metrics, MetricsClient}
 
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.FiniteDuration
 import scala.collection.JavaConverters._
+import scala.util.{Failure, Success}
 
 object JsonRpcController {
 
@@ -91,6 +95,16 @@ class JsonRpcController(
   import IeleJsonMethodsImplicits._
   import JsonMethodsImplicits._
   import JsonRpcErrors._
+
+  /**
+   * The total number of endpoint calls
+   */
+  private[this] final val totalEndpointCalls = new AtomicLong(0L)
+
+  /**
+   * The total number of successful endpoint calls
+   */
+  private[this] final val totalSuccessfulEndpointCalls = new AtomicLong(0L)
 
   lazy val apisHandleFns: Map[String, PartialFunction[JsonRpcRequest, Future[JsonRpcResponse]]] = Map(
     Apis.Eth -> handleEthRequest,
@@ -287,11 +301,49 @@ class JsonRpcController(
       case _ => Future.successful(errorResponse(request, MethodNotFound))
     }
 
-    if (config.disabledMethods.contains(request.method)) {
+    val method = request.method
+    val metricsClient = MetricsClient.get()
+
+    val totalCalls = this.totalEndpointCalls.incrementAndGet()
+    metricsClient.gauge(Metrics.JsonRpcEndpointTotalCallsNumber, totalCalls)
+
+    // Catch-all endpoint counter
+    metricsClient.increment(Metrics.JsonRpcEndpointCounter)
+    // Per-method counter
+    val methodCounter = Metrics.Fragment.mkJsonRpcMethodCounter(method)
+    metricsClient.increment(methodCounter)
+
+    if (config.disabledMethods.contains(method)) {
       Future.successful(errorResponse(request, MethodNotFound))
     } else {
       val handleFn = enabledApis.foldLeft(notFoundFn)((fn, api) => apisHandleFns.getOrElse(api, PartialFunction.empty) orElse fn)
-      handleFn(request)
+      val result: Future[JsonRpcResponse] = handleFn(request)
+
+      def updateCallSuccessMetrics(totalSuccessfulCalls: Long): Unit = {
+        val callSuccessRatio = totalSuccessfulCalls.toDouble / totalCalls.toDouble
+
+        metricsClient.gauge(Metrics.JsonRpcEndpointTotalSuccessfulCallsNumber, totalSuccessfulCalls)
+        metricsClient.gauge(Metrics.JsonRpcEndpointSuccessfulCallsRatio, callSuccessRatio)
+      }
+
+      // Notice how we do not differentiate between JsonRpcErrors and actual exceptions
+      //        and we just count them all as failures.
+      result.onComplete {
+        case Success(JsonRpcResponse(_, _, jsonRpcErrorOpt, _)) =>
+          val totalSuccessfulCalls =
+            if(jsonRpcErrorOpt.isDefined)
+              this.totalSuccessfulEndpointCalls.get()
+            else
+              this.totalSuccessfulEndpointCalls.incrementAndGet()
+
+          updateCallSuccessMetrics(totalSuccessfulCalls)
+
+        case Failure(_) =>
+          val totalSuccessfulCalls = this.totalSuccessfulEndpointCalls.get()
+          updateCallSuccessMetrics(totalSuccessfulCalls)
+      }
+
+      result
     }
   }
 
