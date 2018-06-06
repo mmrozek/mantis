@@ -1,7 +1,8 @@
 package io.iohk.ethereum.jsonrpc
 
-import java.util.concurrent.atomic.AtomicLong
+import java.util.function.BiFunction
 
+import com.google.common.collect.Maps
 import io.iohk.ethereum.jsonrpc.EthService._
 import io.iohk.ethereum.jsonrpc.JsonRpcController.JsonRpcConfig
 import io.iohk.ethereum.jsonrpc.NetService._
@@ -96,15 +97,35 @@ class JsonRpcController(
   import JsonMethodsImplicits._
   import JsonRpcErrors._
 
-  /**
-   * The total number of endpoint calls
-   */
-  private[this] final val totalEndpointCalls = new AtomicLong(0L)
+//  /**
+//   * The total number of endpoint calls
+//   */
+//  private[this] final val totalEndpointCalls = new AtomicLong(0L)
+//
+//  /**
+//   * The total number of successful endpoint calls
+//   */
+//  private[this] final val totalSuccessfulEndpointCalls = new AtomicLong(0L)
 
   /**
-   * The total number of successful endpoint calls
+   * A map of metric name to number of calls.
+   * The metric is either about the endpoint in general or a specific method
    */
-  private[this] final val totalSuccessfulEndpointCalls = new AtomicLong(0L)
+  private[this] final val NumberOfCallsByMetric = Maps.newConcurrentMap[String, Long]()
+
+  /**
+   * This is used to update the metric
+   */
+  private[this] final val LongAdder: BiFunction[Long, Long, Long] = (t: Long, u: Long) ⇒ t + u
+
+  private[this] final def incrementNumberOfCallsAndGet(metricName: String): Long = {
+    // if not exists initialize with 1L, else add 1L to the existing value
+    NumberOfCallsByMetric.merge(metricName, 1L, LongAdder)
+  }
+
+  private[this] final def getNumberOfCalls(metricName: String): Long = {
+    NumberOfCallsByMetric.getOrDefault(metricName, 1L)
+  }
 
   lazy val apisHandleFns: Map[String, PartialFunction[JsonRpcRequest, Future[JsonRpcResponse]]] = Map(
     Apis.Eth -> handleEthRequest,
@@ -301,17 +322,37 @@ class JsonRpcController(
       case _ => Future.successful(errorResponse(request, MethodNotFound))
     }
 
+    ///////////////////////////////////////
+    // + Metrics
+    ///////////////////////////////////////
     val method = request.method
     val metricsClient = MetricsClient.get()
 
-    val totalCalls = this.totalEndpointCalls.incrementAndGet()
-    metricsClient.gauge(Metrics.JsonRpcEndpointTotalCallsNumber, totalCalls)
+    NumberOfCallsByMetric.merge(
+      Metrics.JsonRpcEndpointTotalCallsNumber,
+      1,
+      LongAdder
+    )
 
-    // Catch-all endpoint counter
+    // Increment total calls for the endpoint
+    val endpointTotalCallsMetricName = Metrics.JsonRpcEndpointTotalCallsNumber
+    val endpointTotalCalls = incrementNumberOfCallsAndGet(endpointTotalCallsMetricName)
+    metricsClient.gauge(endpointTotalCallsMetricName, endpointTotalCalls)
+
+    // Increment total calls for the specific method
+    val methodTotalCallsMetricName = Metrics.Fragment.mkJsonRpcMethodTotalCallsNumber(method)
+    val methodTotalCalls = incrementNumberOfCallsAndGet(methodTotalCallsMetricName)
+    metricsClient.gauge(methodTotalCallsMetricName, methodTotalCalls)
+
+    // Count rate for endpoint calls
     metricsClient.increment(Metrics.JsonRpcEndpointCounter)
-    // Per-method counter
-    val methodCounter = Metrics.Fragment.mkJsonRpcMethodCounter(method)
-    metricsClient.increment(methodCounter)
+
+    // Count rate for the specific method
+    val methodCounterMetricName = Metrics.Fragment.mkJsonRpcMethodCounter(method)
+    metricsClient.increment(methodCounterMetricName)
+    ///////////////////////////////////////
+    // - Metrics
+    ///////////////////////////////////////
 
     if (config.disabledMethods.contains(method)) {
       Future.successful(errorResponse(request, MethodNotFound))
@@ -319,29 +360,46 @@ class JsonRpcController(
       val handleFn = enabledApis.foldLeft(notFoundFn)((fn, api) => apisHandleFns.getOrElse(api, PartialFunction.empty) orElse fn)
       val result: Future[JsonRpcResponse] = handleFn(request)
 
-      def updateCallSuccessMetrics(totalSuccessfulCalls: Long): Unit = {
-        val callSuccessRatio = totalSuccessfulCalls.toDouble / totalCalls.toDouble
+      ///////////////////////////////////////
+      // + Metrics
+      ///////////////////////////////////////
+      def updateCallSuccessMetrics(endpointSuccessCalls: Long, methodSuccessCalls: Long): Unit = {
+        val endpointCallSuccessRatio = endpointSuccessCalls.toDouble / endpointTotalCalls.toDouble
+        val methodSuccessRatio = methodSuccessCalls.toDouble / methodTotalCalls.toDouble
 
-        metricsClient.gauge(Metrics.JsonRpcEndpointTotalSuccessfulCallsNumber, totalSuccessfulCalls)
-        metricsClient.gauge(Metrics.JsonRpcEndpointSuccessfulCallsRatio, callSuccessRatio)
+        metricsClient.gauge(Metrics.JsonRpcEndpointSuccessCallsNumber, endpointSuccessCalls)
+        metricsClient.gauge(Metrics.JsonRpcEndpointSuccessCallsRatio, endpointCallSuccessRatio)
       }
 
-      // Notice how we do not differentiate between JsonRpcErrors and actual exceptions
-      //        and we just count them all as failures.
+      // Note We do not differentiate between JsonRpcErrors and actual Exceptions;
+      //      we just count them all as failures.
       result.onComplete {
         case Success(JsonRpcResponse(_, _, jsonRpcErrorOpt, _)) =>
-          val totalSuccessfulCalls =
-            if(jsonRpcErrorOpt.isDefined)
-              this.totalSuccessfulEndpointCalls.get()
-            else
-              this.totalSuccessfulEndpointCalls.incrementAndGet()
+          val (endpointSuccessCalls, methodSuccessCalls) = {
+            val endpointMetricName = Metrics.JsonRpcEndpointSuccessCallsNumber
+            val methodMetricName = Metrics.Fragment.mkJsonRpcMethodSuccessfulCallsNumber(method)
 
-          updateCallSuccessMetrics(totalSuccessfulCalls)
+            // We increment the metric iff we are successful
+            if(jsonRpcErrorOpt.isDefined)
+              (getNumberOfCalls(endpointMetricName), getNumberOfCalls(methodMetricName))
+            else
+              (incrementNumberOfCallsAndGet(endpointMetricName), incrementNumberOfCallsAndGet(methodMetricName))
+          }
+
+          updateCallSuccessMetrics(endpointSuccessCalls, methodSuccessCalls)
 
         case Failure(_) =>
-          val totalSuccessfulCalls = this.totalSuccessfulEndpointCalls.get()
-          updateCallSuccessMetrics(totalSuccessfulCalls)
+          val endpointMetricName = Metrics.JsonRpcEndpointSuccessCallsNumber
+          val endpointSuccessCalls = getNumberOfCalls(endpointMetricName)
+
+          val methodMetricName = Metrics.Fragment.mkJsonRpcMethodSuccessfulCallsNumber(method)
+          val methodSuccessCalls = getNumberOfCalls(methodMetricName)
+
+          updateCallSuccessMetrics(endpointSuccessCalls, methodSuccessCalls)
       }
+      ///////////////////////////////////////
+      // - Metrics
+      ///////////////////////////////////////
 
       result
     }

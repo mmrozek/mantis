@@ -1,5 +1,9 @@
 package io.iohk.ethereum.metrics
 
+import java.util.concurrent.ConcurrentMap
+
+import com.google.common.collect.Maps
+
 object Metrics {
   /**
    * Signifies that Mantis has started.
@@ -49,12 +53,12 @@ object Metrics {
   /**
    * How many JSON-RPC endpoint calls had a successful response.
    */
-  final val JsonRpcEndpointTotalSuccessfulCallsNumber = "json.rpc.endpoint.total.successful.calls.number"
+  final val JsonRpcEndpointSuccessCallsNumber = "json.rpc.endpoint.success.calls.number"
 
   /**
    * Ratio of `number of JSON-RPC endpoint calls that had a successful response` to `total number of JSON-RPC endpoint calls`.
    */
-  final val JsonRpcEndpointSuccessfulCallsRatio = "json.rpc.endpoint.successful.calls.ratio"
+  final val JsonRpcEndpointSuccessCallsRatio = "json.rpc.endpoint.success.calls.ratio"
 
   /**
    * Counts the rate at which the JSON RPC endpoint is called.
@@ -63,9 +67,72 @@ object Metrics {
 
   // These are not metrics per se but are used in order to dynamically create metric names.
   object Fragment {
-    final val JsonRpcMethodCounterPrefix = "json.rpc.method."
-    final val JsonRpcMethodCounterSuffix = ".counter"
-    def mkJsonRpcMethodCounter(method: String): String = JsonRpcMethodCounterPrefix + method + JsonRpcMethodCounterSuffix
-  }
+    private[this] type MethodName = String
+    private[this] type MetricName = String
+    private[this] type MethodMetricMap = ConcurrentMap[MethodName, MetricName]
 
+    @inline
+    private[this] def getMetric(map: MethodMetricMap, prefix: String, suffix: String, key: String): String = {
+      map.get(key) match {
+        case null ⇒
+          val metric = prefix + key + suffix
+          map.putIfAbsent(key, metric)
+          metric
+
+        case metric ⇒
+          metric
+      }
+    }
+
+    private[this] def newMetricMap: ConcurrentMap[String, String] = Maps.newConcurrentMap[String, String]()
+
+    private[this] final val MethodCounterMap = newMetricMap
+    private[this] final val JsonRpcMethodCounterPrefix = "json.rpc.method."
+    private[this] final val JsonRpcMethodCounterSuffix = ".counter"
+
+    /**
+     * Creates the metric (name) that:
+     *    counts the rate at which a specific endpoint method is called.
+     */
+    def mkJsonRpcMethodCounter(method: String): String =
+      getMetric(
+        map = MethodCounterMap,
+        prefix = JsonRpcMethodCounterPrefix,
+        suffix = JsonRpcMethodCounterSuffix,
+        key = method
+      )
+
+    private[this] final val MethodTotalCallsNumberMap = newMetricMap
+    private[this] final val JsonRpcMethodTotalCallsNumberPrefix = "json.rpc.method."
+    private[this] final val JsonRpcMethodTotalCallsNumberSuffix = ".total.calls.number"
+
+    /**
+     * Creates the metric (name) that:
+     *    counts the number of times a specific endpoint method is called.
+     */
+    def mkJsonRpcMethodTotalCallsNumber(method: String): String =
+      getMetric(
+        map = MethodTotalCallsNumberMap,
+        prefix = JsonRpcMethodTotalCallsNumberPrefix,
+        suffix = JsonRpcMethodTotalCallsNumberSuffix,
+        key = method
+      )
+
+    private[this] final val MethodSuccessfulCallsNumberMap = newMetricMap
+    private[this] final val JsonRpcMethodSuccessCallsNumberPrefix = "json.rpc.method."
+    private[this] final val JsonRpcMethodSuccessCallsNumberSuffix = ".success.calls.number"
+
+    /**
+     * Creates the metric (name) that:
+     *    counts the number of times a specific endpoint method returns successfully.
+     */
+    def mkJsonRpcMethodSuccessfulCallsNumber(method: String): String =
+      getMetric(
+        map = MethodSuccessfulCallsNumberMap,
+        prefix = JsonRpcMethodSuccessCallsNumberPrefix,
+        suffix = JsonRpcMethodSuccessCallsNumberSuffix,
+        key = method
+      )
+
+  }
 }
