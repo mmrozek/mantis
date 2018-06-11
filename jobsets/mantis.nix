@@ -1,10 +1,10 @@
-{ stdenv, pkgs, mantisSrc, sbtVerify, protobuf3_5 }:
+{ stdenv, pkgs, mantisSrc, sbtVerify, protobuf }:
 
 stdenv.mkDerivation {
   name = "mantis";
   src = mantisSrc;
 
-  buildInputs = with pkgs; [ scala sbt sbtVerify unzip protobuf3_5 openjdk8 ];
+  buildInputs = with pkgs; [ scala sbt sbtVerify unzip protobuf openjdk8 ];
 
   outputs = [ "out" "zip" ];
 
@@ -22,9 +22,9 @@ stdenv.mkDerivation {
     find .ivy -name protoc\*jar
 
     # We have to patch the executable embedded inside protoc-jar. :-(
-    mkdir -p bin/3.5.1
-    cp ${protobuf3_5}/bin/protoc  bin/3.5.1/protoc-3.5.1-linux-x86_64.exe
-    jar uf .ivy/cache/com.github.os72/protoc-jar/jars/protoc-jar-3.5.1.jar  bin/3.5.1/protoc-3.5.1-linux-x86_64.exe
+    mkdir -p bin/3.4.0
+    cp ${protobuf}/bin/protoc  bin/3.4.0/protoc-3.4.0-linux-x86_64.exe
+    jar uf .ivy/cache/com.github.os72/protoc-jar/jars/protoc-jar-3.4.0.jar  bin/3.4.0/protoc-3.4.0-linux-x86_64.exe
   '';
 
   buildPhase = ''
