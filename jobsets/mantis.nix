@@ -19,6 +19,8 @@ stdenv.mkDerivation {
     # found of doing this is to get it to list the available projects.
     sbt -Dsbt.global.base=.sbt/1.0 -Dsbt.ivy.home=.ivy projects
 
+    find .ivy -name protoc\*jar
+
     # We have to patch the executable embedded inside protoc-jar. :-(
     mkdir -p bin/3.5.1
     cp ${protobuf3_5}/bin/protoc  bin/3.5.1/protoc-3.5.1-linux-x86_64.exe
